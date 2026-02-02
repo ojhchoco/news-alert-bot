@@ -1,0 +1,31 @@
+# 가상환경 (각 PC/노트북에서 따로 만듦)
+venv/
+.venv/
+env/
+
+# 환경변수 (비밀키 포함, 업로드 금지)
+.env
+.env.local
+.env.*.local
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+
+# 로그
+*.log
+app.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
