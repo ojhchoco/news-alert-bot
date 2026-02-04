@@ -19,12 +19,16 @@
     </script>
 </head>
 <body class="bg-gradient-to-br from-primary to-secondary min-h-screen flex items-center justify-center p-4">
-    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-2xl w-full">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 max-w-5xl w-full">
         <h1 class="text-3xl font-bold text-gray-800 mb-8 text-center">
-            📰 뉴스 검색 및 Slack 알림
+            📰 뉴스 & 리서치 검색 대시보드
         </h1>
         
-        <form id="searchForm" class="space-y-6">
+        <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+            <!-- 뉴스 검색 폼 -->
+            <div>
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">뉴스 검색 및 Slack 알림</h2>
+                <form id="searchForm" class="space-y-6">
             <div>
                 <label for="keyword" class="block text-sm font-semibold text-gray-700 mb-2">
                     검색 키워드
@@ -34,9 +38,25 @@
                     id="keyword" 
                     name="keyword" 
                     required 
-                    placeholder="예: AI, 인공지능"
+                    placeholder="예: AI, 인공지능 (여러 개는 쉼표 또는 줄바꿈으로 구분)"
                     class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:outline-none focus:border-primary transition-colors"
                 >
+            </div>
+
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <div>
+                    <label for="provider" class="block text-sm font-semibold text-gray-700 mb-2">
+                        뉴스 소스
+                    </label>
+                    <select
+                        id="provider"
+                        name="provider"
+                        class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:outline-none focus:border-primary transition-colors bg-white"
+                    >
+                        <option value="naver">네이버 뉴스 (한국 중심)</option>
+                        <option value="google">Google News (글로벌)</option>
+                    </select>
+                </div>
             </div>
             
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -63,17 +83,80 @@
                         class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:outline-none focus:border-primary transition-colors"
                     >
                 </div>
+                </div>
+                
+                <button 
+                    type="submit"
+                    class="w-full bg-gradient-to-r from-primary to-secondary text-white py-3 rounded-lg font-semibold text-lg hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-200"
+                >
+                    뉴스 검색
+                </button>
+            </form>
+        </div>
+
+            <!-- 리서치/정부 자료 검색 폼 -->
+            <div>
+                <h2 class="text-xl font-semibold text-gray-800 mb-4">리서치 · 정부 · 국제기구 자료 검색</h2>
+                <form id="researchForm" class="space-y-6">
+                    <div>
+                        <label for="research_keyword" class="block text-sm font-semibold text-gray-700 mb-2">
+                            검색 키워드
+                        </label>
+                        <input 
+                            type="text" 
+                            id="research_keyword" 
+                            name="research_keyword" 
+                            required 
+                            placeholder="예: OECD AI policy, WHO vaccine (여러 개는 쉼표 또는 줄바꿈으로 구분)"
+                            class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:outline-none focus:border-primary transition-colors"
+                        >
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label for="research_language" class="block text-sm font-semibold text-gray-700 mb-2">
+                                문서 언어 (선택)
+                            </label>
+                            <select
+                                id="research_language"
+                                name="research_language"
+                                class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:outline-none focus:border-primary transition-colors bg-white"
+                            >
+                                <option value="">자동 (Google 기본)</option>
+                                <option value="en">영어 (en)</option>
+                                <option value="ko">한국어 (ko)</option>
+                                <option value="ja">일본어 (ja)</option>
+                                <option value="vi">베트남어 (vi)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label for="research_max" class="block text-sm font-semibold text-gray-700 mb-2">
+                                최대 결과 수 (1~10)
+                            </label>
+                            <input 
+                                type="number" 
+                                id="research_max" 
+                                name="research_max"
+                                min="1"
+                                max="10"
+                                value="10"
+                                class="w-full px-4 py-3 border-2 border-gray-200 rounded-lg focus:outline-none focus:border-primary transition-colors"
+                            >
+                        </div>
+                    </div>
+
+                    <button 
+                        type="submit"
+                        class="w-full bg-gradient-to-r from-secondary to-primary text-white py-3 rounded-lg font-semibold text-lg hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-200"
+                    >
+                        리서치 자료 검색
+                    </button>
+                </form>
             </div>
-            
-            <button 
-                type="submit"
-                class="w-full bg-gradient-to-r from-primary to-secondary text-white py-3 rounded-lg font-semibold text-lg hover:shadow-lg transform hover:-translate-y-0.5 transition-all duration-200"
-            >
-                검색
-            </button>
-        </form>
+        </div>
         
         <div id="results" class="mt-8 hidden"></div>
+        <div id="researchResults" class="mt-8 hidden"></div>
     </div>
     
     <script>
@@ -83,6 +166,7 @@
             const keyword = document.getElementById('keyword').value;
             const startDate = document.getElementById('start_date').value;
             const endDate = document.getElementById('end_date').value;
+            const provider = document.getElementById('provider').value;
             const resultsDiv = document.getElementById('results');
             
             // 로딩 표시
@@ -103,7 +187,8 @@
                     body: JSON.stringify({
                         keyword: keyword,
                         start_date: startDate || null,
-                        end_date: endDate || null
+                        end_date: endDate || null,
+                        provider: provider
                     })
                 });
                 
@@ -117,7 +202,7 @@
                             <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                                 <div class="bg-white p-4 rounded-lg shadow">
                                     <div class="text-sm text-gray-500 mb-1">키워드</div>
-                                    <div class="text-lg font-semibold text-gray-800">${data.keyword}</div>
+                                    <div class="text-lg font-semibold text-gray-800">${(data.keywords && data.keywords.length) ? data.keywords.join(', ') : data.keyword}</div>
                                 </div>
                                 <div class="bg-white p-4 rounded-lg shadow">
                                     <div class="text-sm text-gray-500 mb-1">기간</div>
@@ -147,6 +232,7 @@
                                     <div class="flex items-start">
                                         <span class="bg-primary text-white rounded-full w-8 h-8 flex items-center justify-center font-bold mr-3 flex-shrink-0">${index + 1}</span>
                                         <div class="flex-1">
+                                            ${item.keyword ? `<span class="inline-block bg-primary/20 text-primary text-xs font-medium px-2 py-0.5 rounded mb-2">${item.keyword}</span>` : ''}
                                             <h4 class="font-semibold text-gray-800 mb-2">${item.title}</h4>
                                             <a 
                                                 href="${item.link}" 
@@ -190,6 +276,123 @@
                 }
             } catch (error) {
                 resultsDiv.innerHTML = `
+                    <div class="bg-red-50 border-2 border-red-200 rounded-lg p-6">
+                        <div class="flex items-center">
+                            <span class="text-2xl mr-3">❌</span>
+                            <div>
+                                <h3 class="font-bold text-red-800 mb-1">연결 오류</h3>
+                                <p class="text-red-700">${error.message}</p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+        });
+
+        document.getElementById('researchForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            const keyword = document.getElementById('research_keyword').value;
+            const language = document.getElementById('research_language').value;
+            const maxResultsInput = document.getElementById('research_max').value;
+            const maxResults = Number(maxResultsInput) || 10;
+            const researchResultsDiv = document.getElementById('researchResults');
+
+            // 로딩 표시
+            researchResultsDiv.innerHTML = `
+                <div class="flex items-center justify-center py-8">
+                    <div class="animate-spin rounded-full h-12 w-12 border-b-2 border-secondary"></div>
+                    <span class="ml-4 text-gray-600 font-medium">리서치 자료 검색 중...</span>
+                </div>
+            `;
+            researchResultsDiv.classList.remove('hidden');
+
+            try {
+                const response = await fetch('/research/search', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        keyword: keyword,
+                        language: language || null,
+                        max_results: maxResults
+                    })
+                });
+
+                const data = await response.json();
+
+                if (response.ok) {
+                    let html = `
+                        <div class="bg-gray-50 rounded-lg p-6 space-y-4">
+                            <h2 class="text-2xl font-bold text-gray-800 mb-4">리서치 / 정부 / 국제기구 자료</h2>
+                            
+                            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                                <div class="bg-white p-4 rounded-lg shadow">
+                                    <div class="text-sm text-gray-500 mb-1">키워드</div>
+                                    <div class="text-lg font-semibold text-gray-800">${(data.keywords && data.keywords.length) ? data.keywords.join(', ') : data.keyword}</div>
+                                </div>
+                                <div class="bg-white p-4 rounded-lg shadow">
+                                    <div class="text-sm text-gray-500 mb-1">총 결과 수</div>
+                                    <div class="text-lg font-semibold text-gray-800">${data.total_results}개</div>
+                                </div>
+                                <div class="bg-white p-4 rounded-lg shadow">
+                                    <div class="text-sm text-gray-500 mb-1">메시지</div>
+                                    <div class="text-sm font-medium text-gray-700">${data.message}</div>
+                                </div>
+                            </div>
+                    `;
+
+                    if (data.items && data.items.length > 0) {
+                        html += '<div class="space-y-3">';
+                        data.items.forEach((item, index) => {
+                            html += `
+                                <div class="bg-white border-l-4 border-secondary p-4 rounded-lg shadow hover:shadow-md transition-shadow">
+                                    <div class="flex items-start">
+                                        <span class="bg-secondary text-white rounded-full w-8 h-8 flex items-center justify-center font-bold mr-3 flex-shrink-0">${index + 1}</span>
+                                        <div class="flex-1">
+                                            ${item.matched_keyword ? `<span class="inline-block bg-secondary/20 text-secondary text-xs font-medium px-2 py-0.5 rounded mb-2">${item.matched_keyword}</span>` : ''}
+                                            <h4 class="font-semibold text-gray-800 mb-2">${item.title}</h4>
+                                            <p class="text-sm text-gray-700 mb-2 whitespace-pre-line">${item.snippet}</p>
+                                            <a 
+                                                href="${item.link}" 
+                                                target="_blank" 
+                                                rel="noopener noreferrer"
+                                                class="text-secondary hover:underline text-sm break-all"
+                                            >
+                                                ${item.link}
+                                            </a>
+                                        </div>
+                                    </div>
+                                </div>
+                            `;
+                        });
+                        html += '</div>';
+                    } else {
+                        html += `
+                            <div class="bg-yellow-50 border-2 border-yellow-200 rounded-lg p-6 text-center">
+                                <p class="text-yellow-800 font-medium">검색 결과가 없습니다.</p>
+                            </div>
+                        `;
+                    }
+
+                    html += '</div>';
+                    researchResultsDiv.innerHTML = html;
+                } else {
+                    researchResultsDiv.innerHTML = `
+                        <div class="bg-red-50 border-2 border-red-200 rounded-lg p-6">
+                            <div class="flex items-center">
+                                <span class="text-2xl mr-3">❌</span>
+                                <div>
+                                    <h3 class="font-bold text-red-800 mb-1">오류 발생</h3>
+                                    <p class="text-red-700">${data.detail || '알 수 없는 오류가 발생했습니다.'}</p>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
+            } catch (error) {
+                researchResultsDiv.innerHTML = `
                     <div class="bg-red-50 border-2 border-red-200 rounded-lg p-6">
                         <div class="flex items-center">
                             <span class="text-2xl mr-3">❌</span>

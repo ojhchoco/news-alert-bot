@@ -26,23 +26,32 @@ Claude AI를 활용한 뉴스 알림 시스템
 
 ### 1. 환경변수 설정
 
-프로젝트 루트에 `.env` 파일을 생성하고 다음 내용을 추가하세요:
+프로젝트 루트에 `.env` 파일을 생성하고 다음 내용을 추가하세요. **`.env.example`** 파일을 복사해 사용해도 됩니다.
 
 ```bash
-# 네이버 검색 API 설정 (필수)
+# 네이버 검색 API (뉴스 검색 시 필수)
 NAVER_CLIENT_ID=your_naver_client_id
 NAVER_CLIENT_SECRET=your_naver_client_secret
 
-# Slack Webhook URL (선택)
+# Slack (선택)
 SLACK_WEBHOOK_URL=https://hooks.slack.com/services/YOUR/WEBHOOK/URL
 
-# Email SMTP 설정 (선택)
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your_email@gmail.com
-SMTP_PASSWORD=your_app_password
-EMAIL_TO=recipient@example.com
+# Google News RSS (글로벌 뉴스, API 키 불필요)
+GOOGLE_NEWS_HL=ko
+GOOGLE_NEWS_GL=KR
+GOOGLE_NEWS_CEID=KR:ko
+
+# 연구/정부/국제기구 자료 검색 (Google Custom Search)
+GOOGLE_CSE_ID=your_custom_search_engine_id
+GOOGLE_API_KEY=your_google_api_key
 ```
+
+**연구·정부 자료 검색용 CSE 도메인 제안**  
+Google Programmable Search Engine에서 "검색할 사이트"에 아래처럼 넣으면 해당 기관 위주로 검색됩니다.
+
+- 국제기구: `*.un.org`, `*.who.int`, `*.oecd.org`, `*.imf.org`, `*.worldbank.org`
+- 연구/학술: `*.nature.com`, `*.gov`, `*.go.kr` 등  
+자세한 목록은 **`.env.example`** 파일 하단 주석을 참고하세요.
 
 ### 2. 네이버 API 키 발급
 
@@ -105,11 +114,16 @@ uvicorn main:app --reload
 ```
 
 **파라미터:**
-- `keyword` (필수): 검색 키워드
+- `keyword` (필수): 검색 키워드. **여러 개 입력 시 쉼표 또는 줄바꿈으로 구분** (예: `"AI, 인공지능, 일본 경제"`). 키워드별로 검색한 결과가 합쳐지며, 각 기사에 `keyword` 필드로 어떤 키워드로 검색됐는지 표시됩니다.
 - `start_date` (선택): 시작 날짜 (YYYY-MM-DD, 기본값: 오늘-7일)
 - `end_date` (선택): 종료 날짜 (YYYY-MM-DD, 기본값: 오늘)
 - `sort_by` (선택): `sim`(관련도순, 기본값), `date`(최신순)
 - `use_relevance_filter` (선택): 제목+요약 기준 관련도로 상위만 선정 (기본값: true)
+- `provider` (선택): `naver`(기본값), `google`
+
+### POST /research/search
+
+연구소·정부·국제기구 자료 검색 (Google Custom Search). **키워드는 쉼표/줄바꿈으로 여러 개 입력 가능**하며, 키워드별로 검색한 결과를 합쳐 반환합니다. 각 항목에 `matched_keyword`로 어떤 키워드로 검색됐는지 표시됩니다. `GOOGLE_CSE_ID`, `GOOGLE_API_KEY` 환경변수 필요.
 
 ## 🔗 기타 엔드포인트
 
