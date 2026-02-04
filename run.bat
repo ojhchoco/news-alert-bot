@@ -14,6 +14,11 @@ if not exist "venv\Scripts\activate.bat" (
 )
 
 call venv\Scripts\activate.bat
+echo.
+echo [안내] 서버가 켜지면 브라우저에서 http://localhost:8000 이 자동으로 열립니다.
+echo         안 열리면 직접 주소창에 입력하세요.
+echo.
+start http://localhost:8000
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 pause

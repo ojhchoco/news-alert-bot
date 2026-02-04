@@ -115,10 +115,16 @@ class ResearchSearchRequest(BaseModel):
         description="검색 언어 코드 (예: en, ko, ja, vi). 지정하지 않으면 Google 기본값 사용",
     )
     max_results: int = Field(
-        10,
+        30,
         ge=1,
-        le=10,
-        description="가져올 최대 결과 수 (1~10, Google Custom Search 제한)",
+        le=30,
+        description="가져올 최대 결과 수 (1~30, 페이지네이션으로 수집)",
+    )
+    start_date: Optional[str] = Field(None, description="시작 날짜 (YYYY-MM-DD). end_date와 함께 쓰면 해당 기간으로 제한")
+    end_date: Optional[str] = Field(None, description="종료 날짜 (YYYY-MM-DD). start_date와 함께 쓰면 해당 기간으로 제한")
+    date_restrict: Optional[str] = Field(
+        None,
+        description="기간 제한(날짜 미지정 시): d1(1일), w1(1주), m1(1개월), y1(1년). 없으면 전체 기간",
     )
 
 
@@ -128,6 +134,20 @@ class ResearchSearchResponse(BaseModel):
     total_results: int
     items: List[ResearchSearchItem]
     message: str
+
+
+def _redact_secrets(text: str) -> str:
+    """로그/에러 메시지에 API 키·비밀값이 노출되지 않도록 마스킹합니다."""
+    if not text:
+        return text
+    s = text
+    # key=... (API 키), cx=... (CSE ID), client_secret=..., URL 내 토큰 등 마스킹
+    s = re.sub(r"\bkey=[^&\s]+", "key=***", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bcx=[^&\s]+", "cx=***", s, flags=re.IGNORECASE)
+    s = re.sub(r"\bclient_secret=[^&\s]+", "client_secret=***", s, flags=re.IGNORECASE)
+    s = re.sub(r"X-Naver-Client-Secret[:\s]*[^\s]+", "X-Naver-Client-Secret: ***", s, flags=re.IGNORECASE)
+    s = re.sub(r"hooks\.slack\.com/services/[^\s]+", "hooks.slack.com/services/***", s, flags=re.IGNORECASE)
+    return s
 
 
 def parse_keywords(raw: str) -> List[str]:
@@ -217,18 +237,29 @@ def _relevance_score(keyword: str, title: str, description: str) -> int:
 def _fetch_research_page(
     keyword: str,
     language: Optional[str],
-    max_results: int,
+    start_index: int,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    date_restrict: Optional[str] = None,
 ) -> List[ResearchSearchItem]:
-    """Google Custom Search API 1회 호출. 키워드당 호출됩니다."""
+    """Google Custom Search API 1회 호출. start_index는 1, 11, 21 등(페이지네이션)."""
     url = "https://www.googleapis.com/customsearch/v1"
     params: Dict[str, str] = {
         "key": GOOGLE_API_KEY,
         "cx": GOOGLE_CSE_ID,
         "q": keyword,
-        "num": str(min(max_results, 10)),
+        "num": "10",
+        "start": str(start_index),
     }
     if language:
         params["lr"] = f"lang_{language}"
+    if start_date and end_date and validate_date_format(start_date) and validate_date_format(end_date):
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        if start_dt <= end_dt:
+            params["sort"] = f"date:r:{start_date.replace('-', '')}:{end_date.replace('-', '')}"
+    elif date_restrict:
+        params["dateRestrict"] = date_restrict
 
     response = requests.get(url, params=params, timeout=10)
     response.raise_for_status()
@@ -241,18 +272,21 @@ def _fetch_research_page(
             snippet=item.get("snippet", ""),
             matched_keyword=keyword,
         )
-        for item in items_data[:max_results]
+        for item in items_data
     ]
 
 
 def get_research_results(
     keywords: List[str],
     language: Optional[str] = None,
-    max_results_per_keyword: int = 10,
+    max_results_per_keyword: int = 30,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    date_restrict: Optional[str] = None,
 ) -> List[ResearchSearchItem]:
     """
     Google Custom Search API를 사용하여 연구소/정부/국제기구 등의 자료를 검색합니다.
-    여러 키워드를 주면 키워드별로 검색한 뒤 결과를 합쳐 반환하며, 각 항목에 matched_keyword를 붙입니다.
+    여러 키워드를 주면 키워드별로 검색한 뒤 결과를 합쳐 반환하며, 최대 30개까지 페이지네이션으로 수집합니다.
     """
     if not GOOGLE_CSE_ID or not GOOGLE_API_KEY:
         logger.error("Google Custom Search API 키 또는 CSE ID가 설정되지 않았습니다.")
@@ -267,14 +301,34 @@ def get_research_results(
             detail="검색 키워드는 비어 있을 수 없습니다.",
         )
 
+    if start_date and end_date and (not validate_date_format(start_date) or not validate_date_format(end_date)):
+        raise HTTPException(
+            status_code=400,
+            detail="시작/종료 날짜는 YYYY-MM-DD 형식이어야 합니다.",
+        )
+    if start_date and end_date:
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d")
+        if start_dt > end_dt:
+            raise HTTPException(status_code=400, detail="시작 날짜는 종료 날짜보다 이전이어야 합니다.")
+
     try:
         research_items: List[ResearchSearchItem] = []
         for kw in keywords:
-            logger.info(
-                f"Google Custom Search 호출: keyword={kw}, language={language}, max_results={max_results_per_keyword}"
-            )
-            page = _fetch_research_page(kw, language, max_results_per_keyword)
-            research_items.extend(page)
+            collected: List[ResearchSearchItem] = []
+            for start_index in (1, 11, 21):
+                if len(collected) >= max_results_per_keyword:
+                    break
+                logger.info(
+                    f"Google Custom Search 호출: keyword={kw}, start={start_index}, date_restrict={date_restrict}, start_date={start_date}, end_date={end_date}"
+                )
+                page = _fetch_research_page(
+                    kw, language, start_index, start_date, end_date, date_restrict
+                )
+                collected.extend(page)
+                if len(page) < 10:
+                    break
+            research_items.extend(collected[:max_results_per_keyword])
 
         logger.info(f"Google Custom Search 결과: 총 {len(research_items)}개 (키워드 {len(keywords)}개)")
         return research_items
@@ -288,22 +342,31 @@ def get_research_results(
             detail="연구/정부 자료 검색 API 호출 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
         )
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Google Custom Search HTTP 오류: {e.response.status_code} - {e.response.text}")
+        logger.error("Google Custom Search HTTP 오류: %s - %s", e.response.status_code, _redact_secrets(e.response.text or ""))
+        if e.response.status_code == 403:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "Custom Search API 접근이 거부되었습니다(403). "
+                    "이 API는 무료 할당량(일 100회)을 쓰더라도 프로젝트에 결제(빌링) 계정이 연결되어 있어야 합니다. "
+                    "결제 계정이 없거나 사용 중지된 경우 리서치 검색은 사용할 수 없으며, 뉴스 검색(네이버/Google News)만 이용해 주세요."
+                ),
+            )
         raise HTTPException(
             status_code=500,
-            detail=f"연구/정부 자료 검색 중 HTTP 오류가 발생했습니다: {str(e)}",
+            detail="연구/정부 자료 검색 중 HTTP 오류가 발생했습니다. 상태 코드: " + str(e.response.status_code),
         )
     except requests.exceptions.RequestException as e:
-        logger.error(f"Google Custom Search 요청 오류: {str(e)}")
+        logger.error("Google Custom Search 요청 오류: %s", _redact_secrets(str(e)))
         raise HTTPException(
             status_code=500,
-            detail=f"연구/정부 자료 검색 중 요청 오류가 발생했습니다: {str(e)}",
+            detail="연구/정부 자료 검색 중 요청 오류가 발생했습니다.",
         )
     except Exception as e:
-        logger.error(f"연구/정부 자료 검색 중 예상치 못한 오류: {str(e)}", exc_info=True)
+        logger.error("연구/정부 자료 검색 중 예상치 못한 오류: %s", _redact_secrets(str(e)), exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"연구/정부 자료 검색 중 예상치 못한 오류가 발생했습니다: {str(e)}",
+            detail="연구/정부 자료 검색 중 예상치 못한 오류가 발생했습니다.",
         )
 
 
@@ -395,22 +458,22 @@ def get_google_news(
             detail="Google News RSS 호출 시간이 초과되었습니다. 잠시 후 다시 시도해주세요.",
         )
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Google News RSS HTTP 오류: {e.response.status_code} - {e.response.text}")
+        logger.error("Google News RSS HTTP 오류: %s - %s", e.response.status_code, _redact_secrets(e.response.text or ""))
         raise HTTPException(
             status_code=500,
-            detail=f"Google News RSS 호출 중 오류가 발생했습니다: {str(e)}",
+            detail="Google News RSS 호출 중 오류가 발생했습니다. 상태 코드: " + str(e.response.status_code),
         )
     except requests.exceptions.RequestException as e:
-        logger.error(f"Google News RSS 요청 오류: {str(e)}")
+        logger.error("Google News RSS 요청 오류: %s", _redact_secrets(str(e)))
         raise HTTPException(
             status_code=500,
-            detail=f"Google News RSS 호출 중 오류가 발생했습니다: {str(e)}",
+            detail="Google News RSS 호출 중 오류가 발생했습니다.",
         )
     except Exception as e:
-        logger.error(f"Google News RSS 처리 중 예상치 못한 오류: {str(e)}", exc_info=True)
+        logger.error("Google News RSS 처리 중 예상치 못한 오류: %s", _redact_secrets(str(e)), exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"Google News RSS 처리 중 예상치 못한 오류가 발생했습니다: {str(e)}",
+            detail="Google News RSS 호출 중 오류가 발생했습니다.",
         )
 
 
@@ -504,7 +567,7 @@ def get_naver_news(
             detail="네이버 뉴스 API 호출 시간이 초과되었습니다. 잠시 후 다시 시도해주세요."
         )
     except requests.exceptions.HTTPError as e:
-        logger.error(f"네이버 뉴스 API HTTP 오류: {e.response.status_code} - {e.response.text}")
+        logger.error("네이버 뉴스 API HTTP 오류: %s - %s", e.response.status_code, _redact_secrets(e.response.text or ""))
         if e.response.status_code == 401:
             raise HTTPException(
                 status_code=401,
@@ -518,19 +581,19 @@ def get_naver_news(
         else:
             raise HTTPException(
                 status_code=500,
-                detail=f"네이버 뉴스 API 호출 중 오류가 발생했습니다: {str(e)}"
+                detail="네이버 뉴스 API 호출 중 오류가 발생했습니다. 상태 코드: " + str(e.response.status_code),
             )
     except requests.exceptions.RequestException as e:
-        logger.error(f"네이버 뉴스 API 요청 오류: {str(e)}")
+        logger.error("네이버 뉴스 API 요청 오류: %s", _redact_secrets(str(e)))
         raise HTTPException(
             status_code=500,
-            detail=f"네이버 뉴스 API 호출 중 오류가 발생했습니다: {str(e)}"
+            detail="네이버 뉴스 API 호출 중 오류가 발생했습니다.",
         )
     except Exception as e:
-        logger.error(f"예상치 못한 오류 발생: {str(e)}", exc_info=True)
+        logger.error("예상치 못한 오류 발생: %s", _redact_secrets(str(e)), exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"예상치 못한 오류가 발생했습니다: {str(e)}"
+            detail="예상치 못한 오류가 발생했습니다.",
         )
 
 
@@ -586,13 +649,13 @@ def send_slack_notification(keyword: str, news_items: List[NewsSearchItem], peri
         logger.error("Slack Webhook 호출 타임아웃")
         return False
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Slack Webhook HTTP 오류: {e.response.status_code} - {e.response.text}")
+        logger.error("Slack Webhook HTTP 오류: %s - %s", e.response.status_code, _redact_secrets(e.response.text or ""))
         return False
     except requests.exceptions.RequestException as e:
-        logger.error(f"Slack Webhook 요청 오류: {str(e)}")
+        logger.error("Slack Webhook 요청 오류: %s", _redact_secrets(str(e)))
         return False
     except Exception as e:
-        logger.error(f"Slack 알림 전송 중 예상치 못한 오류: {str(e)}", exc_info=True)
+        logger.error("Slack 알림 전송 중 예상치 못한 오류: %s", _redact_secrets(str(e)), exc_info=True)
         return False
 
 
@@ -775,10 +838,10 @@ def search_news(request: NewsSearchRequest = Body(...)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"뉴스 검색 중 예상치 못한 오류: {str(e)}", exc_info=True)
+        logger.error("뉴스 검색 중 예상치 못한 오류: %s", _redact_secrets(str(e)), exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"예상치 못한 오류가 발생했습니다: {str(e)}"
+            detail="예상치 못한 오류가 발생했습니다."
         )
 
 
@@ -801,6 +864,9 @@ def search_research(request: ResearchSearchRequest = Body(...)):
             keywords=keywords,
             language=request.language,
             max_results_per_keyword=request.max_results,
+            start_date=request.start_date,
+            end_date=request.end_date,
+            date_restrict=request.date_restrict,
         )
 
         message = (
@@ -821,8 +887,8 @@ def search_research(request: ResearchSearchRequest = Body(...)):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"연구/정부 자료 검색 중 예상치 못한 오류: {str(e)}", exc_info=True)
+        logger.error("연구/정부 자료 검색 중 예상치 못한 오류: %s", _redact_secrets(str(e)), exc_info=True)
         raise HTTPException(
             status_code=500,
-            detail=f"연구/정부 자료 검색 중 예상치 못한 오류가 발생했습니다: {str(e)}"
+            detail="연구/정부 자료 검색 중 예상치 못한 오류가 발생했습니다."
         )
