@@ -201,6 +201,14 @@
     </div>
     
     <script>
+        // 비밀 키 사용 시 서버에서 넘긴 키를 API 호출에 포함 (미설정 시 빈 문자열)
+        window.API_KEY = {{ api_key|default('')|tojson }};
+        function authHeaders() {
+            const h = { 'Content-Type': 'application/json' };
+            if (window.API_KEY) h['X-Api-Key'] = window.API_KEY;
+            return h;
+        }
+
         document.getElementById('searchForm').addEventListener('submit', async function(e) {
             e.preventDefault();
             
@@ -222,9 +230,7 @@
             try {
                 const response = await fetch('/news/search', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: authHeaders(),
                     body: JSON.stringify({
                         keyword: keyword,
                         start_date: startDate || null,
@@ -354,9 +360,7 @@
             try {
                 const response = await fetch('/research/search', {
                     method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
+                    headers: authHeaders(),
                     body: JSON.stringify({
                         keyword: keyword,
                         language: language || null,

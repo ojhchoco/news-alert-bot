@@ -1,12 +1,14 @@
 from fastapi import FastAPI, Query, Body, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from starlette.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 from typing import List, Optional, Tuple, Dict, Literal
 from pydantic import BaseModel, Field
 import re
 from collections import Counter
 import os
 import logging
+import base64
 from datetime import datetime, timedelta
 import requests
 from dotenv import load_dotenv
@@ -39,10 +41,109 @@ GOOGLE_NEWS_CEID = os.getenv("GOOGLE_NEWS_CEID", "KR:ko")
 GOOGLE_CSE_ID = os.getenv("GOOGLE_CSE_ID")  # 커스텀 검색 엔진 ID
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")  # Google API 키
 
+# 접근 제한 (선택): 둘 다 없으면 인증 없이 모두 접근 가능
+APP_SECRET_KEY = os.getenv("APP_SECRET_KEY")  # 설정 시 URL ?key=... 또는 헤더 X-Api-Key 필요
+APP_BASIC_USER = os.getenv("APP_BASIC_USER")  # Basic 인증 사용 시 아이디
+APP_BASIC_PASSWORD = os.getenv("APP_BASIC_PASSWORD")  # Basic 인증 사용 시 비밀번호
+
 app = FastAPI(title="뉴스 검색 및 Slack 알림 시스템")
 
 # Jinja2 템플릿 설정
 templates = Jinja2Templates(directory="templates")
+
+
+def _check_auth(request: Request) -> Optional[str]:
+    """
+    인증 확인. 통과 시 None, 실패 시 401 응답용 메시지 반환.
+    비밀 키가 있으면 query 'key' 또는 헤더 'X-Api-Key'로 검사.
+    Basic 인증이 설정돼 있으면 Authorization: Basic 검사.
+    """
+    path = request.scope.get("path", "")
+    if path in ("/health", "/healthz"):
+        return None
+
+    # 비밀 키 검사 (설정된 경우)
+    if APP_SECRET_KEY:
+        key = request.query_params.get("key") or request.headers.get("X-Api-Key") or ""
+        if key and key == APP_SECRET_KEY:
+            return None
+        if not key and path == "/":
+            return "key_form"  # 루트는 키 입력 폼 반환
+        # 키가 없거나 틀림 → Basic도 설정돼 있으면 Basic 시도
+        if not (APP_BASIC_USER and APP_BASIC_PASSWORD):
+            return "key_required" if not key else "key_invalid"
+
+    # Basic 인증 검사
+    if APP_BASIC_USER and APP_BASIC_PASSWORD:
+        auth = request.headers.get("Authorization")
+        if auth and auth.startswith("Basic "):
+            try:
+                decoded = base64.b64decode(auth[6:].strip()).decode("utf-8")
+                user, _, password = decoded.partition(":")
+                if user == APP_BASIC_USER and password == APP_BASIC_PASSWORD:
+                    return None
+            except Exception:
+                pass
+        return "basic_required"
+
+    return None
+
+
+class AuthMiddleware(BaseHTTPMiddleware):
+    """APP_SECRET_KEY 또는 APP_BASIC_* 설정 시 접근 제한."""
+
+    async def dispatch(self, request: Request, call_next):
+        if not APP_SECRET_KEY and not (APP_BASIC_USER and APP_BASIC_PASSWORD):
+            return await call_next(request)
+
+        result = _check_auth(request)
+        if result is None:
+            return await call_next(request)
+
+        path = request.scope.get("path", "")
+
+        # 비밀 키 방식: 루트 접속 시 키 입력 폼
+        if result == "key_form":
+            html = """
+            <!DOCTYPE html>
+            <html><head><meta charset="utf-8"><title>접근</title></head>
+            <body style="font-family:sans-serif;max-width:400px;margin:80px auto;padding:24px;">
+            <h2>비밀 키 입력</h2>
+            <p>이 서비스는 비밀 키로만 접근할 수 있습니다.</p>
+            <form method="get" action="/">
+            <input type="text" name="key" placeholder="비밀 키" required style="width:100%;padding:8px;margin:8px 0;">
+            <button type="submit" style="padding:8px 16px;">입장</button>
+            </form>
+            </body></html>
+            """
+            return Response(content=html, status_code=401, media_type="text/html; charset=utf-8")
+
+        if result == "key_required":
+            return Response(
+                content='{"detail":"비밀 키가 필요합니다. URL에 ?key=비밀키 를 붙이거나 헤더 X-Api-Key 를 보내주세요."}',
+                status_code=401,
+                media_type="application/json; charset=utf-8",
+            )
+        if result == "key_invalid":
+            return Response(
+                content='{"detail":"비밀 키가 올바르지 않습니다."}',
+                status_code=401,
+                media_type="application/json; charset=utf-8",
+            )
+
+        # Basic 인증 필요
+        if result == "basic_required":
+            return Response(
+                content='{"detail":"Basic 인증이 필요합니다."}',
+                status_code=401,
+                headers={"WWW-Authenticate": "Basic realm=\"News Alert Bot\", charset=\"UTF-8\""},
+                media_type="application/json; charset=utf-8",
+            )
+
+        return await call_next(request)
+
+
+app.add_middleware(AuthMiddleware)
 
 
 class NewsItem(BaseModel):
@@ -372,7 +473,7 @@ def get_research_results(
 
 def get_google_news(
     keyword: str,
-    max_results: int = 30,
+    max_results: int = 50,
 ) -> List[NewsSearchItem]:
     """
     Google News RSS를 사용하여 글로벌 뉴스를 가져옵니다.
@@ -410,7 +511,8 @@ def get_google_news(
         items = channel.findall("item")
         news_items: List[NewsSearchItem] = []
 
-        for item in items[:max_results]:
+        # Google News RSS는 보통 100건 내외 반환. 요청한 만큼만 사용(최대 100)
+        for item in items[:min(max_results, 100)]:
             title_elem = item.find("title")
             link_elem = item.find("link")
             pub_date_elem = item.find("pubDate")
@@ -477,85 +579,97 @@ def get_google_news(
         )
 
 
+# 네이버 API 페이지네이션: 한 번에 최대 100건, start는 1~1000
+NAVER_DISPLAY_PER_PAGE = 100
+NAVER_MAX_START = 1000
+NAVER_MAX_PAGES = 5  # 최대 5페이지(500건)까지 수집해 기간 필터 후 사용
+
+
 def get_naver_news(
     keyword: str,
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
-    max_results: int = 10,
+    max_results: int = 30,
     sort_by: str = "sim",
     use_relevance_filter: bool = True,
 ) -> List[NewsSearchItem]:
     """
     네이버 뉴스 검색 API를 사용하여 뉴스를 가져옵니다.
-    - 검색은 네이버 API 기준으로 제목·요약(description)에서만 이루어지며, 본문은 사용하지 않습니다.
-    - use_relevance_filter=True이면 API에서 더 많이 받아온 뒤, 제목+요약 기준 관련도 점수로 상위만 선정합니다.
+    - 기간이 넓을수록 여러 페이지를 요청해 수집한 뒤, 설정한 기간 안의 기사만 남깁니다.
+    - use_relevance_filter=True이면 제목+요약 기준 관련도 점수로 상위만 선정합니다.
     """
     try:
         client_id, client_secret = validate_api_keys()
-        
-        # 날짜 검증
+
         if start_date and not validate_date_format(start_date):
             raise HTTPException(
                 status_code=400,
                 detail=f"시작 날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식을 사용해주세요. (입력: {start_date})"
             )
-        
         if end_date and not validate_date_format(end_date):
             raise HTTPException(
                 status_code=400,
                 detail=f"종료 날짜 형식이 올바르지 않습니다. YYYY-MM-DD 형식을 사용해주세요. (입력: {end_date})"
             )
-        
+
         url = "https://openapi.naver.com/v1/search/news.json"
         headers = {
             "X-Naver-Client-Id": client_id,
             "X-Naver-Client-Secret": client_secret
         }
-        # 관련도 필터 사용 시 후보를 더 받아서 우리가 상위만 선정
-        request_display = min(30, 100) if use_relevance_filter else min(max_results, 100)
-        params = {
-            "query": keyword,
-            "display": request_display,
-            "sort": sort_by,  # sim=관련도순, date=최신순
-            "start": 1
-        }
-        
-        logger.info(f"네이버 뉴스 API 호출: keyword={keyword}, start_date={start_date}, end_date={end_date}, sort={sort_by}, relevance_filter={use_relevance_filter}")
-        
-        response = requests.get(url, headers=headers, params=params, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        
-        candidates: List[Tuple[int, NewsSearchItem]] = []
-        for item in data.get("items", []):
-            title = re.sub(r'<[^>]+>', '', item.get("title", ""))
-            description = re.sub(r'<[^>]+>', '', item.get("description", ""))
-            
-            pub_date = item.get("pubDate", "")
-            if pub_date:
-                try:
-                    date_obj = datetime.strptime(pub_date.split("+")[0].strip(), "%a, %d %b %Y %H:%M:%S")
-                    date_obj = date_obj.replace(tzinfo=pytz.UTC).astimezone(KST)
-                    formatted_date = date_obj.strftime("%Y-%m-%d")
-                except Exception as e:
-                    logger.warning(f"날짜 파싱 실패: {pub_date}, 오류: {str(e)}")
+
+        all_candidates: List[Tuple[int, NewsSearchItem]] = []
+        for page in range(NAVER_MAX_PAGES):
+            start_offset = 1 + page * NAVER_DISPLAY_PER_PAGE
+            if start_offset > NAVER_MAX_START:
+                break
+            params = {
+                "query": keyword,
+                "display": NAVER_DISPLAY_PER_PAGE,
+                "sort": sort_by,
+                "start": start_offset,
+            }
+            logger.info(f"네이버 뉴스 API 호출: keyword={keyword}, start={start_offset}, sort={sort_by}")
+            response = requests.get(url, headers=headers, params=params, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            items = data.get("items", [])
+            if not items:
+                break
+
+            for item in items:
+                title = re.sub(r'<[^>]+>', '', item.get("title", ""))
+                description = re.sub(r'<[^>]+>', '', item.get("description", ""))
+                pub_date = item.get("pubDate", "")
+                if pub_date:
+                    try:
+                        date_obj = datetime.strptime(pub_date.split("+")[0].strip(), "%a, %d %b %Y %H:%M:%S")
+                        date_obj = date_obj.replace(tzinfo=pytz.UTC).astimezone(KST)
+                        formatted_date = date_obj.strftime("%Y-%m-%d")
+                    except Exception as e:
+                        logger.warning(f"날짜 파싱 실패: {pub_date}, 오류: {str(e)}")
+                        formatted_date = get_korea_time().strftime("%Y-%m-%d")
+                else:
                     formatted_date = get_korea_time().strftime("%Y-%m-%d")
-            else:
-                formatted_date = get_korea_time().strftime("%Y-%m-%d")
-            
-            news_item = NewsSearchItem(
-                title=title,
-                link=item.get("link", ""),
-                pubDate=formatted_date
-            )
-            score = _relevance_score(keyword, title, description) if use_relevance_filter else 0
-            candidates.append((score, news_item))
-        
+
+                if start_date and end_date:
+                    if not (start_date <= formatted_date <= end_date):
+                        continue
+                news_item = NewsSearchItem(
+                    title=title,
+                    link=item.get("link", ""),
+                    pubDate=formatted_date
+                )
+                score = _relevance_score(keyword, title, description) if use_relevance_filter else 0
+                all_candidates.append((score, news_item))
+
+            if len(items) < NAVER_DISPLAY_PER_PAGE:
+                break
+
         if use_relevance_filter:
-            candidates.sort(key=lambda x: -x[0])  # 관련도 점수 높은 순
-        news_items = [item for _, item in candidates[:max_results]]
-        
-        logger.info(f"뉴스 검색 완료: {len(news_items)}개 결과 (관련도 필터={use_relevance_filter})")
+            all_candidates.sort(key=lambda x: -x[0])
+        news_items = [item for _, item in all_candidates[:max_results]]
+        logger.info(f"네이버 뉴스 검색 완료: {len(news_items)}개 (기간 필터 적용={bool(start_date and end_date)})")
         return news_items
     
     except HTTPException:
@@ -692,10 +806,15 @@ FAKE_NEWS_DATABASE = {
 @app.get("/", response_class=HTMLResponse)
 def root(request: Request):
     """
-    홈페이지 - 뉴스 검색 폼
+    홈페이지 - 뉴스 검색 폼. 비밀 키 사용 시 api_key를 템플릿에 넘겨 JS에서 API 호출 시 포함.
     """
     logger.info("홈페이지 접속")
-    return templates.TemplateResponse(request, "index.html")
+    context: Dict[str, str] = {}
+    if APP_SECRET_KEY:
+        key = request.query_params.get("key") or request.headers.get("X-Api-Key") or ""
+        if key == APP_SECRET_KEY:
+            context["api_key"] = key
+    return templates.TemplateResponse(request, "index.html", context=context)
 
 
 @app.get("/health")
@@ -799,12 +918,12 @@ def search_news(request: NewsSearchRequest = Body(...)):
                     keyword=kw,
                     start_date=start_date,
                     end_date=end_date,
-                    max_results=10,
+                    max_results=30,
                     sort_by=request.sort_by,
                     use_relevance_filter=request.use_relevance_filter,
                 )
             else:
-                items = get_google_news(keyword=kw, max_results=30)
+                items = get_google_news(keyword=kw, max_results=50)
             for item in items:
                 news_items.append(
                     NewsSearchItem(
@@ -821,7 +940,7 @@ def search_news(request: NewsSearchRequest = Body(...)):
         if slack_sent:
             message = f"Slack으로 {len(news_items)}개의 뉴스를 전송했습니다"
         else:
-            message = "Slack 전송에 실패했습니다. SLACK_WEBHOOK_URL 환경변수를 확인해주세요."
+            message = "Slack 알림이 전송되지 않았습니다. Slack을 쓰려면 Render(또는 로컬) 환경변수에 SLACK_WEBHOOK_URL을 추가해주세요."
 
         logger.info(f"뉴스 검색 완료: keywords={keywords}, news_count={len(news_items)}, slack_sent={slack_sent}")
 
